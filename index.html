@@ -36,12 +36,13 @@
             position: absolute;
             border: 4px solid #FFD700;
             border-radius: 4px;
-            transition: border-color 0.3s;
+            transition: border-color 0.2s;
         }
         .box.detected {
             border-color: #FF3B30;
         }
 
+        /* 枠の位置微調整 */
         #box1 { top: 5%;   left: 7%;   width: 86%;  height: 35%; }
         #box2 { top: 44%;  left: 17%;  width: 23%;  height: 14%; }
         #box3 { top: 45%;  left: 62%;  width: 22%;  height: 14%; }
@@ -75,7 +76,7 @@
     </div>
 
     <div id="result-area">
-        <div id="status">OCRエンジン準備中...</div>
+        <div id="status">OCRライブラリ初期化中...</div>
         <div class="result-line"><span>枠1:</span> <span id="text-box1">---</span></div>
         <div class="result-line"><span>枠2:</span> <span id="text-box2">---</span></div>
         <div class="result-line"><span>枠3:</span> <span id="text-box3">---</span></div>
@@ -88,27 +89,31 @@
     <script>
         const video = document.getElementById('video');
         const statusEl = document.getElementById('status');
-        let worker = null;
+        
+        // 枠1用(日本語+英語)と、他の枠用(数字専用)の2つのワーカーを用意して速度と精度を両立
+        let workerAll = null;
+        let workerNum = null;
         let isProcessing = false;
 
         async function initOCR() {
             try {
-                statusEl.innerText = "OCRライブラリ初期化中...";
+                statusEl.innerText = "OCRエンジン初期化中(1/2)...";
+                // 全文字用ワーカー (枠1用)
+                workerAll = await Tesseract.createWorker('jpn+eng');
                 
-                // ライブラリの存在チェック
-                if (typeof Tesseract === 'undefined') {
-                    throw new Error("Tesseractライブラリの読み込みに失敗しました。ネット接続を確認してください。");
-                }
+                statusEl.innerText = "OCRエンジン初期化中(2/2)...";
+                // 数字専用ワーカー (枠2〜5用)
+                workerNum = await Tesseract.createWorker('eng');
+                // 枠2〜5は半角数字以外を完全に無視する設定
+                await workerNum.setParameters({
+                    tessedit_char_whitelist: '0123456789'
+                });
 
-                // ワーカーの作成
-                worker = await Tesseract.createWorker('jpn+eng'); 
-                
                 statusEl.innerText = "カメラ起動中...";
                 startCamera();
             } catch (err) {
                 statusEl.style.color = "#FF3B30";
                 statusEl.innerText = "初期化エラー: " + err.message;
-                console.error(err);
             }
         }
 
@@ -126,7 +131,8 @@
                 statusEl.style.color = "#aaa";
                 statusEl.innerText = "スキャン中... 枠内に文字を合わせてください";
                 
-                setInterval(captureAndRecognize, 1500);
+                // 解析サイクルを1秒ごとに設定
+                setInterval(captureAndRecognize, 1000);
             } catch (err) {
                 statusEl.style.color = "#FF3B30";
                 statusEl.innerText = "カメラ起動エラー: " + err.message;
@@ -134,7 +140,7 @@
         }
 
         async function captureAndRecognize() {
-            if (isProcessing || !worker || video.readyState !== video.HAVE_ENOUGH_DATA) return;
+            if (isProcessing || !workerAll || !workerNum || video.readyState !== video.HAVE_ENOUGH_DATA) return;
             isProcessing = true;
 
             const canvas = document.getElementById('crop-canvas');
@@ -142,8 +148,6 @@
 
             const vWidth = video.videoWidth;
             const vHeight = video.videoHeight;
-
-            const container = document.getElementById('overlay-wrapper');
             const videoRect = video.getBoundingClientRect();
 
             for (let i = 1; i <= 5; i++) {
@@ -162,11 +166,19 @@
 
                 canvas.width = cropW;
                 canvas.height = cropH;
+                
+                // 画像のコントラストを少し上げて文字をクッキリさせる（精度向上対策）
+                ctx.filter = 'contrast(1.3) brightness(0.9)';
                 ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+                ctx.filter = 'none'; // 元に戻す
 
                 try {
-                    const { data: { text } } = await worker.recognize(canvas);
-                    const cleanedText = text.replace(/\s+/g, '');
+                    // 枠1とそれ以外で使うエンジンを切り替える
+                    const activeWorker = (i === 1) ? workerAll : workerNum;
+                    const { data: { text } } = await activeWorker.recognize(canvas);
+                    
+                    // 改行や前後の余白をキレイに掃除
+                    const cleanedText = text.trim().replace(/\n/g, '');
 
                     if (cleanedText.length > 0) {
                         boxEl.classList.add('detected');
