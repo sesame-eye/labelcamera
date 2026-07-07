@@ -167,6 +167,20 @@
             console.error(msg);
         }
 
+        // errオブジェクトから可能な限り意味のある文字列を取り出す
+        // (message が無いオブジェクトが投げられて "undefined" と表示される問題を防止)
+        function extractErrorMessage(err) {
+            if (!err) return "不明なエラー(詳細なし)";
+            if (typeof err === 'string') return err;
+            if (err.message) return err.message;
+            try {
+                const s = JSON.stringify(err);
+                if (s && s !== '{}') return s;
+            } catch (e) {}
+            if (err.toString && err.toString() !== '[object Object]') return err.toString();
+            return "不明なエラー(コンソールを確認してください)";
+        }
+
         // Promiseに何秒でタイムアウトさせるかのヘルパー
         function withTimeout(promise, ms, timeoutMsg) {
             return Promise.race([
@@ -195,13 +209,13 @@
                 statusEl.innerText = "センサー初期化中...";
 
                 // 3) worker作成にタイムアウトを設定(ネットワーク不良などで無限に固まるのを防止)
+                // パスは明示指定せず、Tesseract.js標準のデフォルトCDN解決に任せる
+                // (バージョン不一致のパスを手動指定すると原因不明のエラーになりやすいため)
                 worker = await withTimeout(
                     Tesseract.createWorker('eng', 1, {
-                        workerPath: 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/worker.min.js',
-                        corePath: 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js-core/5.1.1/tesseract-core.wasm.js',
-                        langPath: 'https://tessdata.projectnaptha.com/4.0.0'
+                        logger: m => console.log('[tesseract]', m)
                     }),
-                    15000,
+                    20000,
                     "OCRエンジンの読み込みがタイムアウトしました。通信環境をご確認の上、再試行してください。"
                 );
 
@@ -210,7 +224,8 @@
                 statusEl.innerText = "カメラ起動中...";
                 await startCamera();
             } catch (err) {
-                showError("エラー: " + err.message);
+                console.error('initOCR failed:', err);
+                showError("エラー: " + extractErrorMessage(err));
             }
         }
 
@@ -231,7 +246,8 @@
                 // 1.2秒ごとに判定
                 setInterval(captureAndRecognize, 1200);
             } catch (err) {
-                showError("カメラ起動エラー: " + err.message + "(設定 > Safari > カメラ、または設定 > このサイトのカメラ許可を確認してください)");
+                console.error('startCamera failed:', err);
+                showError("カメラ起動エラー: " + extractErrorMessage(err) + "(設定 > Safari > カメラ、または設定 > このサイトのカメラ許可を確認してください)");
             }
         }
 
