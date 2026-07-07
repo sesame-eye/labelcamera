@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>OCR カメラ枠読み取り</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"></script>
+    <title>カメラ枠表示（iOS標準OCR対応）</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: sans-serif; background: #000; color: #fff; overflow: hidden; text-align: center; }
@@ -12,7 +11,7 @@
         #container {
             position: relative;
             width: 100vw;
-            height: 65vh;
+            height: 60vh;
             background: #222;
         }
         video {
@@ -35,37 +34,39 @@
 
         .box {
             position: absolute;
-            border: 4px solid #FFD700;
+            border: 4px solid #FFD700; /* 初期状態：黄色 */
             border-radius: 4px;
-            transition: border-color 0.2s, background-color 0.2s;
+            transition: border-color 0.2s;
         }
-        .box.detected {
+        
+        /* 枠をタップするか、入力欄にフォーカスが当たった時に赤くする（CSSで制御） */
+        .box.active {
             border-color: #FF3B30;
-            background-color: rgba(255, 59, 48, 0.15);
+            background-color: rgba(255, 59, 48, 0.1);
         }
 
-        /* 枠の位置 */
+        /* 枠の位置（ご提示の画像比率） */
         #box1 { top: 5%;   left: 7%;   width: 86%;  height: 35%; }
         #box2 { top: 44%;  left: 17%;  width: 23%;  height: 14%; }
         #box3 { top: 45%;  left: 62%;  width: 22%;  height: 14%; }
         #box4 { top: 62%;  left: 46%;  width: 50%;  height: 15%; }
         #box5 { top: 78%;  left: 55%;  width: 22%;  height: 14%; }
 
+        /* 結果＆入力エリア */
         #result-area {
-            height: 35vh;
+            height: 40vh;
             padding: 12px;
             background: #111;
             overflow-y: auto;
             border-top: 2px solid #333;
             text-align: left;
         }
-        #status { color: #aaa; font-style: italic; margin-bottom: 8px; text-align: center; font-size: 13px; }
-        #status.error { color: #FF3B30; font-weight: bold; }
+        #status { color: #007AFF; font-weight: bold; margin-bottom: 10px; text-align: center; font-size: 14px; }
 
         .result-line {
             display: flex;
             align-items: center;
-            margin-bottom: 6px;
+            margin-bottom: 8px;
         }
         .result-line label {
             width: 50px;
@@ -73,52 +74,20 @@
             color: #FFD700;
             font-size: 14px;
         }
+        /* iOSの標準OCR（テキストをスキャン）を確実に反応させる属性を付与 */
         .result-line input {
             flex: 1;
-            padding: 6px;
+            padding: 8px;
             background: #222;
             border: 1px solid #444;
             color: #fff;
             border-radius: 6px;
-            font-size: 15px;
+            font-size: 16px; /* 16px未満だとiOSでズームしてしまうのを防ぐ */
         }
         .result-line input:focus {
-            border-color: #007AFF;
+            border-color: #FF3B30;
             outline: none;
-        }
-
-        #btn-container {
-            position: absolute;
-            bottom: 37vh;
-            left: 0;
-            width: 100%;
-            display: flex;
-            justify-content: center;
-            pointer-events: none;
-            z-index: 10;
-        }
-        .scan-trigger-btn {
-            pointer-events: auto;
-            background: #FF3B30;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            font-size: 16px;
-            font-weight: bold;
-            border-radius: 25px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-            display: none;
-        }
-        .retry-btn {
-            pointer-events: auto;
-            background: #007AFF;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            font-size: 13px;
-            border-radius: 20px;
-            margin-top: 8px;
-            display: none;
+            background: #333;
         }
     </style>
 </head>
@@ -135,189 +104,53 @@
         </div>
     </div>
 
-    <div id="btn-container">
-        <button id="scan-btn" class="scan-trigger-btn">ここをタップして超高精度スキャン</button>
-    </div>
-
     <div id="result-area">
-        <div id="status">OCR起動中...</div>
-        <button id="retry-btn" class="retry-btn">再試行</button>
-        <div class="result-line"><label>枠1:</label><input type="text" id="text-box1" placeholder="タップしてスキャン"></div>
-        <div class="result-line"><label>枠2:</label><input type="text" id="text-box2" placeholder="タップしてスキャン"></div>
-        <div class="result-line"><label>枠3:</label><input type="text" id="text-box3" placeholder="タップしてスキャン"></div>
-        <div class="result-line"><label>枠4:</label><input type="text" id="text-box4" placeholder="タップしてスキャン"></div>
-        <div class="result-line"><label>枠5:</label><input type="text" id="text-box5" placeholder="タップしてスキャン"></div>
+        <div id="status">枠に合わせて下の入力欄をタップ ➔「テキストをスキャン」</div>
+        <div class="result-line"><label>枠1:</label><input type="text" id="text-box1" placeholder="ここをタップしてスキャン"></div>
+        <div class="result-line"><label>枠2:</label><input type="text" id="text-box2" placeholder="ここをタップしてスキャン"></div>
+        <div class="result-line"><label>枠3:</label><input type="text" id="text-box3" placeholder="ここをタップしてスキャン"></div>
+        <div class="result-line"><label>枠4:</label><input type="text" id="text-box4" placeholder="ここをタップしてスキャン"></div>
+        <div class="result-line"><label>枠5:</label><input type="text" id="text-box5" placeholder="ここをタップしてスキャン"></div>
     </div>
-
-    <canvas id="crop-canvas" style="display:none;"></canvas>
 
     <script>
         const video = document.getElementById('video');
-        const statusEl = document.getElementById('status');
-        const scanBtn = document.getElementById('scan-btn');
-        const retryBtn = document.getElementById('retry-btn');
-        
-        let worker = null;
-        let isProcessing = false;
 
-        function showError(msg) {
-            statusEl.innerText = msg;
-            statusEl.classList.add('error');
-            retryBtn.style.display = 'inline-block';
-            console.error(msg);
-        }
-
-        // errオブジェクトから可能な限り意味のある文字列を取り出す
-        // (message が無いオブジェクトが投げられて "undefined" と表示される問題を防止)
-        function extractErrorMessage(err) {
-            if (!err) return "不明なエラー(詳細なし)";
-            if (typeof err === 'string') return err;
-            if (err.message) return err.message;
-            try {
-                const s = JSON.stringify(err);
-                if (s && s !== '{}') return s;
-            } catch (e) {}
-            if (err.toString && err.toString() !== '[object Object]') return err.toString();
-            return "不明なエラー(コンソールを確認してください)";
-        }
-
-        // Promiseに何秒でタイムアウトさせるかのヘルパー
-        function withTimeout(promise, ms, timeoutMsg) {
-            return Promise.race([
-                promise,
-                new Promise((_, reject) => setTimeout(() => reject(new Error(timeoutMsg)), ms))
-            ]);
-        }
-
-        async function initOCR() {
-            statusEl.classList.remove('error');
-            retryBtn.style.display = 'none';
-
-            // 1) セキュアコンテキスト(HTTPS/localhost)でないとカメラもWorkerも動かない
-            if (!window.isSecureContext) {
-                showError("エラー: このページはHTTPS(またはlocalhost)で開く必要があります。file://や http:// では動作しません。HTTPSでホストして開き直してください。");
-                return;
-            }
-
-            // 2) カメラAPI自体が使えるか
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                showError("エラー: このブラウザ/画面ではカメラAPIが使用できません。");
-                return;
-            }
-
-            try {
-                statusEl.innerText = "センサー初期化中...";
-
-                // 3) worker作成にタイムアウトを設定(ネットワーク不良などで無限に固まるのを防止)
-                // パスは明示指定せず、Tesseract.js標準のデフォルトCDN解決に任せる
-                // (バージョン不一致のパスを手動指定すると原因不明のエラーになりやすいため)
-                worker = await withTimeout(
-                    Tesseract.createWorker('eng', 1, {
-                        logger: m => console.log('[tesseract]', m)
-                    }),
-                    20000,
-                    "OCRエンジンの読み込みがタイムアウトしました。通信環境をご確認の上、再試行してください。"
-                );
-
-                await worker.setParameters({ tessedit_char_whitelist: '0123456789' });
-
-                statusEl.innerText = "カメラ起動中...";
-                await startCamera();
-            } catch (err) {
-                console.error('initOCR failed:', err);
-                showError("エラー: " + extractErrorMessage(err));
-            }
-        }
-
+        // 1. 起動と同時にカメラ映像だけを最速で開始（エラーの起きるOCR処理は一切なし）
         async function startCamera() {
             try {
-                const stream = await withTimeout(
-                    navigator.mediaDevices.getUserMedia({
-                        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-                        audio: false
-                    }),
-                    10000,
-                    "カメラの起動がタイムアウトしました。カメラへのアクセス許可を確認してください。"
-                );
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+                    audio: false
+                });
                 video.srcObject = stream;
-                statusEl.classList.remove('error');
-                statusEl.innerText = "自動枠合わせ中... 文字が入ると赤枠になります";
-                
-                // 1.2秒ごとに判定
-                setInterval(captureAndRecognize, 1200);
             } catch (err) {
-                console.error('startCamera failed:', err);
-                showError("カメラ起動エラー: " + extractErrorMessage(err) + "(設定 > Safari > カメラ、または設定 > このサイトのカメラ許可を確認してください)");
+                document.getElementById('status').innerText = "カメラの起動に失敗しました。Safariの権限を確認してください。";
             }
         }
 
-        async function captureAndRecognize() {
-            if (isProcessing || !worker || video.readyState !== video.HAVE_ENOUGH_DATA) return;
-            isProcessing = true;
+        // 2. どの入力欄が選択されているかに応じて、画面上の枠線の色を「黄色 ➔ 赤（active）」に切り替える
+        const inputs = [
+            { input: document.getElementById('text-box1'), box: document.getElementById('box1') },
+            { input: document.getElementById('text-box2'), box: document.getElementById('box2') },
+            { input: document.getElementById('text-box3'), box: document.getElementById('box3') },
+            { input: document.getElementById('text-box4'), box: document.getElementById('box4') },
+            { input: document.getElementById('text-box5'), box: document.getElementById('box5') }
+        ];
 
-            const canvas = document.getElementById('crop-canvas');
-            const ctx = canvas.getContext('2d');
-            const vWidth = video.videoWidth;
-            const vHeight = video.videoHeight;
-            const videoRect = video.getBoundingClientRect();
-
-            let anyDetected = false;
-
-            // 枠2〜5（数字エリア）を中心に簡易チェックして、文字があるかだけ判定
-            for (let i = 2; i <= 5; i++) {
-                const boxEl = document.getElementById(`box${i}`);
-                const boxRect = boxEl.getBoundingClientRect();
-
-                const scaleX = vWidth / videoRect.width;
-                const scaleY = vHeight / videoRect.height;
-
-                const cropX = (boxRect.left - videoRect.left) * scaleX;
-                const cropY = (boxRect.top - videoRect.top) * scaleY;
-                const cropW = boxRect.width * scaleX;
-                const cropH = boxRect.height * scaleY;
-
-                if (cropW <= 0 || cropH <= 0) continue;
-
-                canvas.width = cropW;
-                canvas.height = cropH;
-                ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-                try {
-                    const { data: { text } } = await worker.recognize(canvas);
-                    if (text.trim().length > 0) {
-                        // 文字を検知したら大枠（枠1含む）すべてを赤枠に変える
-                        document.getElementById('box1').classList.add('detected');
-                        boxEl.classList.add('detected');
-                        anyDetected = true;
-                    } else {
-                        boxEl.classList.remove('detected');
-                    }
-                } catch (e) {}
-            }
-
-            // 赤枠に変わったら「読み取る」ボタンを表示
-            if (anyDetected) {
-                scanBtn.style.display = "block";
-            } else {
-                scanBtn.style.display = "none";
-                document.getElementById('box1').classList.remove('detected');
-            }
-
-            isProcessing = false;
-        }
-
-        // ボタンタップでiPhoneの超高精度キーボードスキャンを起動
-        scanBtn.addEventListener('click', () => {
-            document.getElementById('text-box1').focus();
-            statusEl.innerText = "キーボード上の【カメラマーク】または【テキストをスキャン】を押してください";
-            statusEl.style.color = "#007AFF";
+        inputs.forEach(item => {
+            // 入力欄がタップされたら対応する枠を赤にする
+            item.input.addEventListener('focus', () => {
+                inputs.forEach(i => i.box.classList.remove('active')); // 一旦全部リセット
+                item.box.classList.add('active');
+            });
+            item.input.addEventListener('blur', () => {
+                // 入力欄から外れたら黄に戻す
+                setTimeout(() => { item.box.classList.remove('active'); }, 200);
+            });
         });
 
-        retryBtn.addEventListener('click', () => {
-            location.reload();
-        });
-
-        initOCR();
+        window.addEventListener('load', startCamera);
     </script>
 </body>
 </html>
