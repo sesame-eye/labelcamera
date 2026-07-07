@@ -60,6 +60,7 @@
             text-align: left;
         }
         #status { color: #aaa; font-style: italic; margin-bottom: 8px; text-align: center; font-size: 13px; }
+        #status.error { color: #FF3B30; font-weight: bold; }
 
         .result-line {
             display: flex;
@@ -108,6 +109,17 @@
             box-shadow: 0 4px 15px rgba(0,0,0,0.5);
             display: none;
         }
+        .retry-btn {
+            pointer-events: auto;
+            background: #007AFF;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            font-size: 13px;
+            border-radius: 20px;
+            margin-top: 8px;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -129,6 +141,7 @@
 
     <div id="result-area">
         <div id="status">OCR起動中...</div>
+        <button id="retry-btn" class="retry-btn">再試行</button>
         <div class="result-line"><label>枠1:</label><input type="text" id="text-box1" placeholder="タップしてスキャン"></div>
         <div class="result-line"><label>枠2:</label><input type="text" id="text-box2" placeholder="タップしてスキャン"></div>
         <div class="result-line"><label>枠3:</label><input type="text" id="text-box3" placeholder="タップしてスキャン"></div>
@@ -142,38 +155,83 @@
         const video = document.getElementById('video');
         const statusEl = document.getElementById('status');
         const scanBtn = document.getElementById('scan-btn');
+        const retryBtn = document.getElementById('retry-btn');
         
         let worker = null;
         let isProcessing = false;
 
+        function showError(msg) {
+            statusEl.innerText = msg;
+            statusEl.classList.add('error');
+            retryBtn.style.display = 'inline-block';
+            console.error(msg);
+        }
+
+        // Promiseに何秒でタイムアウトさせるかのヘルパー
+        function withTimeout(promise, ms, timeoutMsg) {
+            return Promise.race([
+                promise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error(timeoutMsg)), ms))
+            ]);
+        }
+
         async function initOCR() {
+            statusEl.classList.remove('error');
+            retryBtn.style.display = 'none';
+
+            // 1) セキュアコンテキスト(HTTPS/localhost)でないとカメラもWorkerも動かない
+            if (!window.isSecureContext) {
+                showError("エラー: このページはHTTPS(またはlocalhost)で開く必要があります。file://や http:// では動作しません。HTTPSでホストして開き直してください。");
+                return;
+            }
+
+            // 2) カメラAPI自体が使えるか
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                showError("エラー: このブラウザ/画面ではカメラAPIが使用できません。");
+                return;
+            }
+
             try {
                 statusEl.innerText = "センサー初期化中...";
-                
-                // フリーズ防止：読み込みエンジンを「数字（eng）」1つだけに絞って超軽量化
-                worker = await Tesseract.createWorker('eng');
+
+                // 3) worker作成にタイムアウトを設定(ネットワーク不良などで無限に固まるのを防止)
+                worker = await withTimeout(
+                    Tesseract.createWorker('eng', 1, {
+                        workerPath: 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/worker.min.js',
+                        corePath: 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js-core/5.1.1/tesseract-core.wasm.js',
+                        langPath: 'https://tessdata.projectnaptha.com/4.0.0'
+                    }),
+                    15000,
+                    "OCRエンジンの読み込みがタイムアウトしました。通信環境をご確認の上、再試行してください。"
+                );
+
                 await worker.setParameters({ tessedit_char_whitelist: '0123456789' });
 
                 statusEl.innerText = "カメラ起動中...";
-                startCamera();
+                await startCamera();
             } catch (err) {
-                statusEl.innerText = "エラー: " + err.message;
+                showError("エラー: " + err.message);
             }
         }
 
         async function startCamera() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-                    audio: false
-                });
+                const stream = await withTimeout(
+                    navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+                        audio: false
+                    }),
+                    10000,
+                    "カメラの起動がタイムアウトしました。カメラへのアクセス許可を確認してください。"
+                );
                 video.srcObject = stream;
+                statusEl.classList.remove('error');
                 statusEl.innerText = "自動枠合わせ中... 文字が入ると赤枠になります";
                 
                 // 1.2秒ごとに判定
                 setInterval(captureAndRecognize, 1200);
             } catch (err) {
-                statusEl.innerText = "カメラ起動エラーが発生しました";
+                showError("カメラ起動エラー: " + err.message + "(設定 > Safari > カメラ、または設定 > このサイトのカメラ許可を確認してください)");
             }
         }
 
@@ -238,6 +296,12 @@
             statusEl.innerText = "キーボード上の【カメラマーク】または【テキストをスキャン】を押してください";
             statusEl.style.color = "#007AFF";
         });
+
+        retryBtn.addEventListener('click', () => {
+            location.reload();
+        });
+
+        initOCR();
     </script>
 </body>
 </html>
