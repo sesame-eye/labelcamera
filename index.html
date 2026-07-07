@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>OCR カメラ枠読み取り</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: sans-serif; background: #000; color: #fff; overflow: hidden; text-align: center; }
+        
+        /* カメラコンテナ */
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 70vh;
+            background: #222;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        /* 枠線オーバーレイ用の基準レイアウト(画像のアスペクト比に合わせる) */
+        #overlay-wrapper {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100%;
+            max-width: 600px; /* 必要に応じて調整 */
+            aspect-ratio: 3 / 2; /* 元画像のおおよその比率 */
+            pointer-events: none;
+        }
+
+        /* 共通の枠線スタイル */
+        .box {
+            position: absolute;
+            border: 4px solid #FFD700; /* 初期状態：黄色 */
+            border-radius: 4px;
+            transition: border-color 0.3s;
+        }
+        /* 文字が取得できた時のスタイル */
+        .box.detected {
+            border-color: #FF3B30; /* 赤色 */
+        }
+
+        /* 各枠の位置指定（画像の位置をシミュレート） */
+        #box1 { top: 5%;   left: 7%;   width: 86%;  height: 35%; }
+        #box2 { top: 44%;  left: 17%;  width: 23%;  height: 14%; }
+        #box3 { top: 45%;  left: 62%;  width: 22%;  height: 14%; }
+        #box4 { top: 62%;  left: 46%;  width: 50%;  height: 15%; }
+        #box5 { top: 78%;  left: 55%;  width: 22%;  height: 14%; }
+
+        /* 結果表示エリア */
+        #result-area {
+            height: 30vh;
+            padding: 15px;
+            background: #111;
+            overflow-y: auto;
+            border-top: 2px solid #333;
+            text-align: left;
+        }
+        .result-line { margin-bottom: 5px; font-size: 14px; }
+        .result-line span { font-weight: bold; color: #FFD700; }
+        #status { color: #aaa; font-style: italic; margin-bottom: 10px; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <div id="container">
+        <video id="video" autoplay playsinline muted></video>
+        <div id="overlay-wrapper">
+            <div id="box1" class="box"></div>
+            <div id="box2" class="box"></div>
+            <div id="box3" class="box"></div>
+            <div id="box4" class="box"></div>
+            <div id="box5" class="box"></div>
+        </div>
+    </div>
+
+    <div id="result-area">
+        <div id="status">OCRエンジン準備中...</div>
+        <div class="result-line"><span>枠1:</span> <span id="text-box1">---</span></div>
+        <div class="result-line"><span>枠2:</span> <span id="text-box2">---</span></div>
+        <div class="result-line"><span>枠3:</span> <span id="text-box3">---</span></div>
+        <div class="result-line"><span>枠4:</span> <span id="text-box4">---</span></div>
+        <div class="result-line"><span>枠5:</span> <span id="text-box5">---</span></div>
+    </div>
+
+    <canvas id="crop-canvas" style="display:none;"></canvas>
+
+    <script>
+        const video = document.getElementById('video');
+        const statusEl = document.getElementById('status');
+        let worker = null;
+        let isProcessing = false;
+
+        // 1. Tesseract.jsの初期化 (日本語+英語)
+        async function initOCR() {
+            statusEl.innerText = "OCR初期化中...";
+            worker = await Tesseract.createWorker(['jpn', 'eng']);
+            statusEl.innerText = "カメラ起動中...";
+            startCamera();
+        }
+
+        // 2. 背面カメラの起動 (iPhone/iPad対応)
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: { exact: "environment" }, // 背面カメラ指定
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
+                });
+                video.srcObject = stream;
+                statusEl.innerText = "スキャン中... 枠内に文字を合わせてください";
+                
+                // 定期的に枠内をクロップして解析ループを回す
+                setInterval(captureAndRecognize, 1500); // 1.5秒ごとに解析
+            } catch (err) {
+                console.warn("背面カメラが見つからないため、デフォルトカメラを使用します。");
+                // PCでのテストや背面カメラ指定エラー時のフォールバック
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                    video.srcObject = stream;
+                    statusEl.innerText = "スキャン中（フロントカメラ/WEBカメラ）";
+                    setInterval(captureAndRecognize, 1500);
+                } catch (e) {
+                    statusEl.innerText = "カメラの起動に失敗しました: " + e.message;
+                }
+            }
+        }
+
+        // 3. 各枠の位置を計算して画像切り出し＆文字認識
+        async function captureAndRecognize() {
+            if (isProcessing || !worker || video.readyState !== video.HAVE_ENOUGH_DATA) return;
+            isProcessing = true;
+
+            const canvas = document.getElementById('crop-canvas');
+            const ctx = canvas.getContext('2d');
+
+            // ビデオの実際の解像度
+            const vWidth = video.videoWidth;
+            const vHeight = video.videoHeight;
+
+            // 表示上のコンテナサイズ
+            const container = document.getElementById('overlay-wrapper');
+            const containerRect = container.getBoundingClientRect();
+            const videoRect = video.getBoundingClientRect();
+
+            // 5つの枠それぞれに対して処理
+            for (let i = 1; i <= 5; i++) {
+                const boxEl = document.getElementById(`box${i}`);
+                const boxRect = boxEl.getBoundingClientRect();
+
+                // ビデオ表示領域に対する枠の相対位置・サイズを計算
+                const scaleX = vWidth / videoRect.width;
+                const scaleY = vHeight / videoRect.height;
+
+                const cropX = (boxRect.left - videoRect.left) * scaleX;
+                const cropY = (boxRect.top - videoRect.top) * scaleY;
+                const cropW = boxRect.width * scaleX;
+                const cropH = boxRect.height * scaleY;
+
+                // 範囲が正常かチェック
+                if (cropW <= 0 || cropH <= 0) continue;
+
+                // Canvasに枠内の映像を切り出して描画
+                canvas.width = cropW;
+                canvas.height = cropH;
+                ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+                try {
+                    // OCR実行
+                    const { data: { text } } = await worker.recognize(canvas);
+                    // 空白や改行を除去
+                    const cleanedText = text.replace(/\s+/g, '');
+
+                    if (cleanedText.length > 0) {
+                        // 文字が検出されたら赤枠にする
+                        boxEl.classList.add('detected');
+                        document.getElementById(`text-box${i}`).innerText = cleanedText;
+                    } else {
+                        // 検出されなければ黄枠に戻す
+                        boxEl.classList.remove('detected');
+                    }
+                } catch (ocrErr) {
+                    console.error("OCR Error:", ocrErr);
+                }
+            }
+
+            isProcessing = false;
+        }
+
+        // 起動
+        window.addEventListener('load', initOCR);
+    </script>
+</body>
+</html>
