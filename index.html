@@ -21,7 +21,7 @@
             object-fit: contain;
         }
 
-        /* 枠線オーバーレイ：全体を80%に縮小（20%小さく） */
+        /* 枠線全体を80%に縮小（はみ出し防止） */
         #overlay-wrapper {
             position: absolute;
             top: 50%;
@@ -39,20 +39,18 @@
             border-radius: 4px;
             transition: border-color 0.2s, background-color 0.2s;
         }
-        /* 文字を検知したら赤枠にし、ほんのり半透明の赤背景にする */
         .box.detected {
             border-color: #FF3B30;
             background-color: rgba(255, 59, 48, 0.15);
         }
 
-        /* 枠の位置（比率） */
+        /* 枠の位置 */
         #box1 { top: 5%;   left: 7%;   width: 86%;  height: 35%; }
         #box2 { top: 44%;  left: 17%;  width: 23%;  height: 14%; }
         #box3 { top: 45%;  left: 62%;  width: 22%;  height: 14%; }
         #box4 { top: 62%;  left: 46%;  width: 50%;  height: 15%; }
         #box5 { top: 78%;  left: 55%;  width: 22%;  height: 14%; }
 
-        /* 結果＆入力エリア */
         #result-area {
             height: 35vh;
             padding: 12px;
@@ -63,7 +61,6 @@
         }
         #status { color: #aaa; font-style: italic; margin-bottom: 8px; text-align: center; font-size: 13px; }
 
-        /* 各入力行のスタイル */
         .result-line {
             display: flex;
             align-items: center;
@@ -75,7 +72,6 @@
             color: #FFD700;
             font-size: 14px;
         }
-        /* iPhoneの標準OCR（テキストをスキャン）を呼び出すためのインプット欄 */
         .result-line input {
             flex: 1;
             padding: 6px;
@@ -90,7 +86,6 @@
             outline: none;
         }
 
-        /* 読み取るボタンのエリア */
         #btn-container {
             position: absolute;
             bottom: 37vh;
@@ -101,7 +96,6 @@
             pointer-events: none;
             z-index: 10;
         }
-        /* 初期状態は非表示、文字を検知したら浮かび上がる */
         .scan-trigger-btn {
             pointer-events: auto;
             background: #FF3B30;
@@ -113,7 +107,6 @@
             border-radius: 25px;
             box-shadow: 0 4px 15px rgba(0,0,0,0.5);
             display: none;
-            animate: pulse 1.5s infinite;
         }
     </style>
 </head>
@@ -135,12 +128,12 @@
     </div>
 
     <div id="result-area">
-        <div id="status">OCRエンジン初期化中...</div>
-        <div class="result-line"><label>枠1:</label><input type="text" id="text-box1" placeholder="タップしてスキャン可能"></div>
-        <div class="result-line"><label>枠2:</label><input type="text" id="text-box2" placeholder="タップしてスキャン可能"></div>
-        <div class="result-line"><label>枠3:</label><input type="text" id="text-box3" placeholder="タップしてスキャン可能"></div>
-        <div class="result-line"><label>枠4:</label><input type="text" id="text-box4" placeholder="タップしてスキャン可能"></div>
-        <div class="result-line"><label>枠5:</label><input type="text" id="text-box5" placeholder="タップしてスキャン可能"></div>
+        <div id="status">OCR起動中...</div>
+        <div class="result-line"><label>枠1:</label><input type="text" id="text-box1" placeholder="タップしてスキャン"></div>
+        <div class="result-line"><label>枠2:</label><input type="text" id="text-box2" placeholder="タップしてスキャン"></div>
+        <div class="result-line"><label>枠3:</label><input type="text" id="text-box3" placeholder="タップしてスキャン"></div>
+        <div class="result-line"><label>枠4:</label><input type="text" id="text-box4" placeholder="タップしてスキャン"></div>
+        <div class="result-line"><label>枠5:</label><input type="text" id="text-box5" placeholder="タップしてスキャン"></div>
     </div>
 
     <canvas id="crop-canvas" style="display:none;"></canvas>
@@ -150,21 +143,21 @@
         const statusEl = document.getElementById('status');
         const scanBtn = document.getElementById('scan-btn');
         
-        let workerAll = null;
-        let workerNum = null;
+        let worker = null;
         let isProcessing = false;
 
         async function initOCR() {
             try {
                 statusEl.innerText = "センサー初期化中...";
-                workerAll = await Tesseract.createWorker('jpn+eng');
-                workerNum = await Tesseract.createWorker('eng');
-                await workerNum.setParameters({ tessedit_char_whitelist: '0123456789' });
+                
+                // フリーズ防止：読み込みエンジンを「数字（eng）」1つだけに絞って超軽量化
+                worker = await Tesseract.createWorker('eng');
+                await worker.setParameters({ tessedit_char_whitelist: '0123456789' });
 
-                statusEl.innerText = "カメラ連動中...";
+                statusEl.innerText = "カメラ起動中...";
                 startCamera();
             } catch (err) {
-                statusEl.innerText = "初期化エラー: " + err.message;
+                statusEl.innerText = "エラー: " + err.message;
             }
         }
 
@@ -177,15 +170,15 @@
                 video.srcObject = stream;
                 statusEl.innerText = "自動枠合わせ中... 文字が入ると赤枠になります";
                 
-                // 1秒ごとに簡易チェック（ロック検知用）
-                setInterval(captureAndRecognize, 1000);
+                // 1.2秒ごとに判定
+                setInterval(captureAndRecognize, 1200);
             } catch (err) {
-                statusEl.innerText = "カメラ接続エラー";
+                statusEl.innerText = "カメラ起動エラーが発生しました";
             }
         }
 
         async function captureAndRecognize() {
-            if (isProcessing || !workerAll || !workerNum || video.readyState !== video.HAVE_ENOUGH_DATA) return;
+            if (isProcessing || !worker || video.readyState !== video.HAVE_ENOUGH_DATA) return;
             isProcessing = true;
 
             const canvas = document.getElementById('crop-canvas');
@@ -196,7 +189,8 @@
 
             let anyDetected = false;
 
-            for (let i = 1; i <= 5; i++) {
+            // 枠2〜5（数字エリア）を中心に簡易チェックして、文字があるかだけ判定
+            for (let i = 2; i <= 5; i++) {
                 const boxEl = document.getElementById(`box${i}`);
                 const boxRect = boxEl.getBoundingClientRect();
 
@@ -215,41 +209,32 @@
                 ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
                 try {
-                    const activeWorker = (i === 1) ? workerAll : workerNum;
-                    const { data: { text } } = await activeWorker.recognize(canvas);
-                    const cleanedText = text.trim();
-
-                    if (cleanedText.length > 0) {
+                    const { data: { text } } = await worker.recognize(canvas);
+                    if (text.trim().length > 0) {
+                        // 文字を検知したら大枠（枠1含む）すべてを赤枠に変える
+                        document.getElementById('box1').classList.add('detected');
                         boxEl.classList.add('detected');
                         anyDetected = true;
-                        
-                        // 途中で大枠だけ仮入力
-                        if(!document.getElementById(`text-box${i}`).value) {
-                            document.getElementById(`text-box${i}`).value = cleanedText;
-                        }
                     } else {
                         boxEl.classList.remove('detected');
                     }
                 } catch (e) {}
             }
 
-            // いずれかの枠に文字が入り、赤枠になったら「読み取る」ボタンを表示
+            // 赤枠に変わったら「読み取る」ボタンを表示
             if (anyDetected) {
                 scanBtn.style.display = "block";
             } else {
                 scanBtn.style.display = "none";
+                document.getElementById('box1').classList.remove('detected');
             }
 
             isProcessing = false;
         }
 
-        // 🔥 【今回の核心】ボタンを押した際、iPhone標準の最強OCR入力を立ち上げる
+        // ボタンタップでiPhoneの超高精度キーボードスキャンを起動
         scanBtn.addEventListener('click', () => {
-            // ユーザーが一番最初に入力させたい「枠1」のインプット欄にフォーカスを当てる
-            const targetInput = document.getElementById('text-box1');
-            targetInput.focus();
-            
-            // 案内メッセージを更新
+            document.getElementById('text-box1').focus();
             statusEl.innerText = "キーボード上の【カメラマーク】または【テキストをスキャン】を押してください";
             statusEl.style.color = "#007AFF";
         });
